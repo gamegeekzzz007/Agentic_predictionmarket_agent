@@ -1,118 +1,224 @@
 """
 database/models.py
-SQLModel table definitions for the Agentic Trading system.
-Trade lifecycle tracking + mathematical audit trail.
+SQLModel table definitions for the Agentic Prediction Market system.
+Replaces the old equity-trading Trade/AuditLog models entirely.
 """
 
 from datetime import datetime
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from enum import Enum
+from typing import Optional
 
-from sqlalchemy import Column, JSON
-from sqlmodel import SQLModel, Field, Relationship
-
-if TYPE_CHECKING:
-    from core.math_utils import TradeSignal
+from sqlmodel import SQLModel, Field
 
 
 # ---------------------------------------------------------------------------
-# Trade — full lifecycle record
+# Enums
 # ---------------------------------------------------------------------------
 
-class Trade(SQLModel, table=True):
-    """
-    Tracks a trade from order placement through close.
+class Platform(str, Enum):
+    KALSHI = "kalshi"
+    POLYMARKET = "polymarket"
 
-    Status progression:
-        pending  ->  filled  ->  closed
-        pending  ->  cancelled
-    """
-    __tablename__ = "trades"
+
+class MarketCategory(str, Enum):
+    ECONOMICS = "economics"
+    POLITICS = "politics"
+    WEATHER = "weather"
+    CRYPTO = "crypto"
+    SPORTS = "sports"
+    ENTERTAINMENT = "entertainment"
+    OTHER = "other"
+
+
+class MarketStatus(str, Enum):
+    ACTIVE = "active"
+    RESOLVED_YES = "resolved_yes"
+    RESOLVED_NO = "resolved_no"
+    EXPIRED = "expired"
+
+
+class PositionSide(str, Enum):
+    YES = "yes"
+    NO = "no"
+
+
+class PositionStatus(str, Enum):
+    PENDING = "pending"
+    OPEN = "open"
+    CLOSED_WIN = "closed_win"
+    CLOSED_LOSS = "closed_loss"
+    CLOSED_EARLY = "closed_early"
+    CANCELLED = "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Market — a single prediction market contract
+# ---------------------------------------------------------------------------
+
+class Market(SQLModel, table=True):
+    """A single prediction market contract tracked by the system."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    symbol: str = Field(index=True, max_length=10)
-    side: str = Field(max_length=4)                       # "buy" | "sell"
-    status: str = Field(default="pending", index=True, max_length=10)
-    strategy_version: str = Field(default="v1.0", max_length=16)
 
-    quantity: float
-    limit_price: Optional[float] = Field(default=None)    # what we asked for
-    entry_price: Optional[float] = Field(default=None)    # what we got
-    exit_price: Optional[float] = Field(default=None)
-    stop_loss_price: Optional[float] = Field(default=None)
-    realized_pnl: Optional[float] = Field(default=None)
+    # Platform identifiers
+    platform: Platform
+    platform_market_id: str = Field(index=True)
+    platform_event_id: Optional[str] = None
 
-    alpaca_order_id: Optional[str] = Field(default=None, max_length=64)
+    # Market details
+    title: str
+    category: MarketCategory
+    description: Optional[str] = None
+    resolution_source: Optional[str] = None
+
+    # Pricing (updated on each scan)
+    yes_price: float
+    no_price: float
+    spread: float
+    volume_24h: int = 0
+
+    # Timing
+    close_time: Optional[datetime] = None
+    resolution_time: Optional[datetime] = None
+    days_to_expiry: Optional[int] = None
+
+    # Status
+    status: MarketStatus = MarketStatus.ACTIVE
+    resolved_outcome: Optional[bool] = None
+
+    # Metadata
+    first_seen: datetime = Field(default_factory=datetime.utcnow)
+    last_updated: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# ProbabilityEstimate — one agent desk's estimate per scan cycle
+# ---------------------------------------------------------------------------
+
+class ProbabilityEstimate(SQLModel, table=True):
+    """One agent desk's probability estimate for a market."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    market_id: int = Field(foreign_key="market.id", index=True)
+    scan_id: str = Field(index=True)
+
+    # Which desk produced this
+    desk: str
+    agent_name: Optional[str] = None
+
+    # The estimate
+    probability: float
+    confidence: float
+    reasoning: str
+
+    # For model desk: which model was used
+    model_type: Optional[str] = None
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    closed_at: Optional[datetime] = Field(default=None)
-
-    # Flexible JSON blob for future data (e.g. greeks, tags)
-    meta_data: Optional[Dict[str, Any]] = Field(
-        default=None, sa_column=Column(JSON)
-    )
-
-    # One-to-one relationship: each Trade has exactly one AuditLog
-    audit_log: Optional["AuditLog"] = Relationship(
-        back_populates="trade",
-        sa_relationship_kwargs={"uselist": False},
-    )
 
 
 # ---------------------------------------------------------------------------
-# AuditLog — mathematical justification snapshot
+# EdgeAnalysis — Kelly gate output for a market
 # ---------------------------------------------------------------------------
 
-class AuditLog(SQLModel, table=True):
-    """
-    Immutable snapshot of the math that justified a trade.
-    Mirrors every field of core.math_utils.TradeSignal so we can
-    always answer: 'Why did we take this trade?'
-    """
-    __tablename__ = "audit_logs"
+class EdgeAnalysis(SQLModel, table=True):
+    """The final edge calculation and Kelly sizing for a market."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    trade_id: int = Field(foreign_key="trades.id", index=True, unique=True)
 
-    # --- Math snapshot (mirrors TradeSignal) ---
-    p_win: float
-    profit_pct: float
-    loss_pct: float
-    ev: float
+    market_id: int = Field(foreign_key="market.id", index=True)
+    scan_id: str = Field(index=True)
+
+    # Consensus probability
+    system_probability: float
+    market_price: float
+
+    # Edge calculation
+    edge: float
+    expected_value: float
+
+    # Kelly sizing
     kelly_fraction: float
-    position_pct: float
-    tradeable: bool
+    half_kelly_fraction: float
+    position_size_dollars: float
+    num_contracts: int
 
-    reasoning: Optional[str] = Field(default=None)
+    # Decision
+    recommended_side: PositionSide
+    tradeable: bool
+    rejection_reason: Optional[str] = None
+
+    # Debate metadata
+    debate_triggered: bool = False
+    debate_transcript: Optional[str] = None
+    estimates_divergence: float = 0.0
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
-    # Flexible JSON blob for future data (e.g. sentiment scores)
-    meta_data: Optional[Dict[str, Any]] = Field(
-        default=None, sa_column=Column(JSON)
-    )
 
-    # Back-reference to Trade
-    trade: Optional[Trade] = Relationship(back_populates="audit_log")
+# ---------------------------------------------------------------------------
+# Position — an actual bet we placed
+# ---------------------------------------------------------------------------
 
-    # --- Factory -----------------------------------------------------------
+class Position(SQLModel, table=True):
+    """An active or closed position in a prediction market."""
 
-    @classmethod
-    def from_trade_signal(
-        cls,
-        trade_id: int,
-        signal: "TradeSignal",
-        reasoning: Optional[str] = None,
-        meta_data: Optional[Dict[str, Any]] = None,
-    ) -> "AuditLog":
-        """Create an AuditLog directly from a TradeSignal dataclass."""
-        return cls(
-            trade_id=trade_id,
-            p_win=signal.p_win,
-            profit_pct=signal.profit_pct,
-            loss_pct=signal.loss_pct,
-            ev=signal.ev,
-            kelly_fraction=signal.kelly_fraction,
-            position_pct=signal.position_pct,
-            tradeable=signal.tradeable,
-            reasoning=reasoning,
-            meta_data=meta_data,
-        )
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    market_id: int = Field(foreign_key="market.id", index=True)
+    edge_analysis_id: int = Field(foreign_key="edgeanalysis.id")
+
+    # Position details
+    platform: Platform
+    side: PositionSide
+    num_contracts: int
+    entry_price: float
+    total_cost: float
+
+    # Exit details (filled when position closes)
+    exit_price: Optional[float] = None
+    pnl_dollars: Optional[float] = None
+    pnl_percent: Optional[float] = None
+
+    # Status
+    status: PositionStatus = PositionStatus.PENDING
+
+    # Platform order ID for tracking
+    platform_order_id: Optional[str] = None
+
+    # Timing
+    opened_at: datetime = Field(default_factory=datetime.utcnow)
+    closed_at: Optional[datetime] = None
+
+
+# ---------------------------------------------------------------------------
+# CalibrationRecord — post-resolution accuracy tracking
+# ---------------------------------------------------------------------------
+
+class CalibrationRecord(SQLModel, table=True):
+    """Tracks prediction accuracy after markets resolve."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    market_id: int = Field(foreign_key="market.id", index=True)
+
+    # What we predicted
+    system_probability: float
+    market_price_at_entry: float
+
+    # What actually happened
+    actual_outcome: bool
+
+    # Accuracy metrics
+    brier_score: float
+
+    # Per-desk accuracy
+    research_estimate: Optional[float] = None
+    base_rate_estimate: Optional[float] = None
+    model_estimate: Optional[float] = None
+
+    # Category for per-category calibration
+    category: MarketCategory
+
+    resolved_at: datetime = Field(default_factory=datetime.utcnow)

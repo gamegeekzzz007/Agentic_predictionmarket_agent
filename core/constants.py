@@ -7,31 +7,27 @@ These values are NOT configurable via environment — they are the law.
 from typing import Final
 
 # ---------------------------------------------------------------------------
-# Risk Limits
+# Risk Limits (KEPT from original — these are battle-tested)
 # ---------------------------------------------------------------------------
 STOP_LOSS_PCT: Final[float] = 0.05              # 5% per-position stop-loss
 MAX_DAILY_DRAWDOWN_PCT: Final[float] = 0.02     # 2% daily drawdown kill-switch
-MAX_POSITION_PCT: Final[float] = 0.25           # 25% max allocation (matches half_kelly cap)
+MAX_POSITION_PCT: Final[float] = 0.25           # 25% max allocation (half_kelly cap)
 
 # ---------------------------------------------------------------------------
-# Market Hours (Eastern Time)
+# Prediction Market Constants (NEW)
 # ---------------------------------------------------------------------------
-MARKET_OPEN_HOUR: Final[int] = 9
-MARKET_OPEN_MINUTE: Final[int] = 30
-MARKET_CLOSE_HOUR: Final[int] = 16
-MARKET_CLOSE_MINUTE: Final[int] = 0
+MAX_CONCURRENT_POSITIONS: Final[int] = 15       # Max open positions at once
+MIN_EDGE_THRESHOLD: Final[float] = 0.05         # 5% minimum edge to trade
+MAX_SPREAD: Final[float] = 0.15                 # Don't trade illiquid markets
 
 # ---------------------------------------------------------------------------
-# Trade Status Strings
+# Debate System (NEW)
 # ---------------------------------------------------------------------------
-STATUS_PENDING: Final[str] = "pending"
-STATUS_FILLED: Final[str] = "filled"
-STATUS_CLOSED: Final[str] = "closed"
-STATUS_CANCELLED: Final[str] = "cancelled"
-STATUS_FAILED: Final[str] = "failed"
+DEBATE_DIVERGENCE_THRESHOLD: Final[float] = 0.10  # 10pp divergence triggers debate
+MAX_DEBATE_ROUNDS: Final[int] = 5                  # Max rounds before moderator forces
+CONVERGENCE_THRESHOLD: Final[float] = 0.05         # Within 5pp = converged
 
 # ---------------------------------------------------------------------------
-# Defaults
+# System
 # ---------------------------------------------------------------------------
-DEFAULT_REFERENCE_EQUITY: Final[float] = 100_000.0   # Alpaca paper default
-STRATEGY_VERSION: Final[str] = "v1.0"
+SYSTEM_VERSION: Final[str] = "v2.0-prediction-markets"
