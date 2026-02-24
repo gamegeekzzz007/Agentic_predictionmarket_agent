@@ -3,28 +3,26 @@ app/services/agent_orchestrator.py
 Multi-agent orchestrator using LangGraph (state machine) + smolagents (agent nodes).
 
 Graph topology:
-    START -> [scraper] -> [theorist, fact_checker] (parallel) -> [quant] -> END
+    START -> [research_desk, base_rate_desk, model_desk] (parallel fan-out)
+          -> consensus_node (fan-in: median or flag for debate)
+          -> END
+
+Phase 4 will add: debate subgraph when divergence > 10%.
 """
 
 import asyncio
-import ast
-import json
 import logging
-import operator
-import os
-import re
-from typing import Annotated, Any, Dict, List
-
-from dotenv import load_dotenv
-
-load_dotenv()  # ensure .env is loaded before model/tool init
+import statistics
+from typing import Annotated, Any
 
 from langgraph.graph import END, START, StateGraph
-from smolagents import CodeAgent, LiteLLMModel, Tool
-from tavily import TavilyClient
 from typing_extensions import TypedDict
 
-from core.config import get_settings
+from agents import EstimateResult
+from agents.research_desk.researcher import run_research_desk
+from agents.base_rate_desk.base_rate import run_base_rate_desk
+from agents.model_desk.statistical_model import run_model_desk
+from core.constants import DEBATE_DIVERGENCE_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -33,255 +31,174 @@ logger = logging.getLogger(__name__)
 # State definition
 # ---------------------------------------------------------------------------
 
+def _merge_estimates(left: list, right: list) -> list:
+    """Reducer: merge estimate lists."""
+    return left + right
 
-class AgentState(TypedDict):
-    """Shared state passed between graph nodes."""
 
-    news_catalyst: str  # overwritten by scraper
-    theses: Annotated[List[str], operator.add]  # reducer: append
-    verified_facts: Annotated[List[str], operator.add]  # reducer: append
-    backtest_results: dict  # overwritten by quant
+class PipelineState(TypedDict):
+    """Shared state for the probability estimation pipeline."""
+    # Input
+    market_title: str
+    market_description: str
+    yes_price: float
+    category: str
+
+    # Accumulated estimates from desks (reducer: append)
+    estimates: Annotated[list[dict], _merge_estimates]
+
+    # Output (set by consensus node)
+    system_probability: float
+    divergence: float
+    debate_needed: bool
+    consensus_reasoning: str
 
 
 # ---------------------------------------------------------------------------
-# Model & tool setup
+# Desk nodes (each runs an agent and appends its estimate)
 # ---------------------------------------------------------------------------
 
-# OpenClaw: OpenAI-compatible proxy → Claude (via LiteLLM)
-_settings = get_settings()
-model = LiteLLMModel(
-    model_id=f"openai/{_settings.OPENCLAW_MODEL_ID}",
-    api_base=_settings.OPENCLAW_BASE_URL,
-    api_key=_settings.OPENCLAW_API_KEY,
-)
-
-# Tavily search client — uses TAVILY_API_KEY from .env
-_tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY", ""))
-
-
-class TavilySearchTool(Tool):
-    """smolagents-compatible tool that searches the web via Tavily."""
-
-    name = "web_search"
-    description = (
-        "Search the web for current information. "
-        "Returns a list of relevant results with titles, URLs, and content snippets."
+def research_node(state: PipelineState) -> dict:
+    """Run the research desk agent."""
+    result = run_research_desk(
+        market_title=state["market_title"],
+        market_description=state["market_description"],
+        yes_price=state["yes_price"],
+        category=state["category"],
     )
-    inputs = {
-        "query": {
-            "type": "string",
-            "description": "The search query to look up.",
-        }
+    logger.info("Research desk: p=%.3f conf=%.2f", result.probability, result.confidence)
+    return {"estimates": [_estimate_to_dict(result)]}
+
+
+def base_rate_node(state: PipelineState) -> dict:
+    """Run the base rate desk agent."""
+    result = run_base_rate_desk(
+        market_title=state["market_title"],
+        market_description=state["market_description"],
+        yes_price=state["yes_price"],
+        category=state["category"],
+    )
+    logger.info("Base rate desk: p=%.3f conf=%.2f", result.probability, result.confidence)
+    return {"estimates": [_estimate_to_dict(result)]}
+
+
+def model_node(state: PipelineState) -> dict:
+    """Run the statistical model desk agent."""
+    result = run_model_desk(
+        market_title=state["market_title"],
+        market_description=state["market_description"],
+        yes_price=state["yes_price"],
+        category=state["category"],
+    )
+    logger.info("Model desk: p=%.3f conf=%.2f", result.probability, result.confidence)
+    return {"estimates": [_estimate_to_dict(result)]}
+
+
+def _estimate_to_dict(est: EstimateResult) -> dict:
+    """Convert EstimateResult to a serializable dict."""
+    return {
+        "desk": est.desk,
+        "agent_name": est.agent_name,
+        "probability": est.probability,
+        "confidence": est.confidence,
+        "reasoning": est.reasoning,
+        "model_type": est.model_type,
     }
-    output_type = "string"
-
-    def forward(self, query: str) -> str:
-        response = _tavily_client.search(query, max_results=5)
-        results = response.get("results", [])
-        if not results:
-            return "No results found."
-        lines: list[str] = []
-        for r in results:
-            lines.append(f"[{r['title']}]({r['url']})")
-            lines.append(r.get("content", "")[:300])
-            lines.append("")
-        return "\n".join(lines)
-
-
-def _get_search_tool() -> TavilySearchTool:
-    """Return a fresh TavilySearchTool instance."""
-    return TavilySearchTool()
 
 
 # ---------------------------------------------------------------------------
-# Node 1 — Scraper (finds today's macro headline)
+# Consensus node (fan-in: combine estimates)
 # ---------------------------------------------------------------------------
 
+def consensus_node(state: PipelineState) -> dict:
+    """
+    Combine estimates from all desks into a single probability.
 
-def scraper_node(state: AgentState) -> dict:
-    """Search the web for a breaking macroeconomic headline."""
-    agent = CodeAgent(
-        tools=[_get_search_tool()],
-        model=model,
-        verbosity_level=0,
-    )
-    prompt = (
-        "Find one major breaking macroeconomic headline from today. "
-        "Return only the headline and a one-sentence summary."
-    )
-    result = agent.run(prompt)
-    logger.info("Scraper found: %s", result)
-    return {"news_catalyst": str(result)}
+    If divergence > DEBATE_DIVERGENCE_THRESHOLD: flag for debate (Phase 4).
+    Otherwise: take the weighted median by confidence.
+    """
+    estimates = state["estimates"]
+    if not estimates:
+        return {
+            "system_probability": state["yes_price"],
+            "divergence": 0.0,
+            "debate_needed": False,
+            "consensus_reasoning": "No estimates produced — falling back to market price.",
+        }
 
+    probabilities = [e["probability"] for e in estimates]
+    confidences = [e["confidence"] for e in estimates]
 
-# ---------------------------------------------------------------------------
-# Node 2A — Theorist (parallel: generates a trading thesis)
-# ---------------------------------------------------------------------------
+    # Divergence = max - min
+    divergence = max(probabilities) - min(probabilities)
 
+    # Debate threshold check
+    debate_needed = divergence > DEBATE_DIVERGENCE_THRESHOLD
 
-def theorist_node(state: AgentState) -> dict:
-    """Generate a second-order trading thesis from the news catalyst."""
-    catalyst = state["news_catalyst"]
-    agent = CodeAgent(
-        tools=[],
-        model=model,
-        verbosity_level=0,
-    )
-    prompt = (
-        f"Given this macroeconomic catalyst: '{catalyst}'. "
-        "Generate a second-order trading thesis. "
-        "Identify the most affected US-listed ticker symbol. "
-        "Format: 'THESIS: ... | TICKER: ...'"
-    )
-    result = agent.run(prompt)
-    logger.info("Theorist thesis: %s", result)
-    return {"theses": [str(result)]}
-
-
-# ---------------------------------------------------------------------------
-# Node 2B — Fact-Checker (parallel: verifies the headline)
-# ---------------------------------------------------------------------------
-
-
-def fact_checker_node(state: AgentState) -> dict:
-    """Verify the news catalyst against corroborating sources."""
-    catalyst = state["news_catalyst"]
-    agent = CodeAgent(
-        tools=[_get_search_tool()],
-        model=model,
-        verbosity_level=0,
-    )
-    prompt = (
-        f"Verify if this news headline is factually accurate: '{catalyst}'. "
-        "Search for corroborating sources. "
-        "Respond with exactly 'VERIFIED' or 'FALSE' followed by a brief explanation."
-    )
-    result = agent.run(prompt)
-    logger.info("Fact-checker result: %s", result)
-    return {"verified_facts": [str(result)]}
-
-
-# ---------------------------------------------------------------------------
-# Node 3 — Quant Sandbox (fan-in: backtests the thesis)
-# ---------------------------------------------------------------------------
-
-
-def _sanitize_numpy(obj: Any) -> Any:
-    """Recursively convert numpy types to native Python types."""
-    try:
-        import numpy as np
-        if isinstance(obj, dict):
-            return {k: _sanitize_numpy(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_sanitize_numpy(v) for v in obj]
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.bool_):
-            return bool(obj)
-    except ImportError:
-        pass
-    return obj
-
-
-def _strip_numpy_wrappers(raw: str) -> str:
-    """Strip numpy type wrappers like np.float64(0.65) -> 0.65 from raw text."""
-    return re.sub(r"(?:np|numpy)\.[\w]+\(([^)]+)\)", r"\1", raw)
-
-
-def _parse_backtest_output(raw: str) -> Dict[str, Any]:
-    """Best-effort parse of the CodeAgent's final answer into a dict."""
-    raw = _strip_numpy_wrappers(raw)
-    # Try JSON first
-    try:
-        return _sanitize_numpy(json.loads(raw))
-    except (json.JSONDecodeError, TypeError):
-        pass
-
-    # Try Python literal
-    try:
-        parsed = ast.literal_eval(raw)
-        if isinstance(parsed, dict):
-            return _sanitize_numpy(parsed)
-    except (ValueError, SyntaxError):
-        pass
-
-    # Try extracting a dict-like substring
-    match = re.search(r"\{[^{}]+\}", raw, re.DOTALL)
-    if match:
-        try:
-            return _sanitize_numpy(json.loads(match.group()))
-        except json.JSONDecodeError:
-            try:
-                parsed = ast.literal_eval(match.group())
-                if isinstance(parsed, dict):
-                    return _sanitize_numpy(parsed)
-            except (ValueError, SyntaxError):
-                pass
-
-    # Fallback: return raw text wrapped in a dict
-    return {"raw_output": raw}
-
-
-def quant_sandbox_node(state: AgentState) -> dict:
-    """Run a code-execution backtest based on the thesis and fact-check."""
-    theses = state["theses"]
-    verified_facts = state["verified_facts"]
-
-    agent = CodeAgent(
-        tools=[],
-        model=model,
-        verbosity_level=0,
-        additional_authorized_imports=["yfinance", "pandas", "datetime"],
-    )
-    prompt = (
-        f"Given thesis: {theses[0]} and verification: {verified_facts[0]}. "
-        "Write and execute a Python backtest: download 30 days of price data "
-        "for the ticker using yfinance, calculate a simple momentum signal, "
-        "and compute the expected return and win rate. "
-        "Return a dict with keys: 'ticker', 'p_win', 'profit_pct', "
-        "'loss_pct', 'side', 'reasoning'."
-    )
-    result = agent.run(prompt)
-    # If the agent returned a dict directly, sanitize numpy types; otherwise parse the string
-    if isinstance(result, dict):
-        parsed = _sanitize_numpy(result)
+    # Weighted average by confidence (more confident agents get more weight)
+    total_weight = sum(confidences)
+    if total_weight > 0:
+        weighted_avg = sum(p * c for p, c in zip(probabilities, confidences)) / total_weight
     else:
-        parsed = _parse_backtest_output(str(result))
-    logger.info("Quant sandbox results: %s", parsed)
-    return {"backtest_results": parsed}
+        weighted_avg = statistics.median(probabilities)
+
+    # If divergence is small, use median (more robust to outliers)
+    # If divergence is large, use weighted average (confidence matters more)
+    if debate_needed:
+        system_probability = weighted_avg
+        method = "weighted_avg (debate flagged)"
+    else:
+        system_probability = statistics.median(probabilities)
+        method = "median"
+
+    # Build reasoning summary
+    desk_summaries = []
+    for e in estimates:
+        desk_summaries.append(f"{e['desk']}: {e['probability']:.3f} (conf={e['confidence']:.2f})")
+
+    reasoning = (
+        f"Method: {method} | Divergence: {divergence:.3f} | "
+        f"Estimates: {', '.join(desk_summaries)}"
+    )
+
+    logger.info(
+        "Consensus: p=%.3f divergence=%.3f debate=%s method=%s",
+        system_probability, divergence, debate_needed, method,
+    )
+
+    return {
+        "system_probability": round(system_probability, 4),
+        "divergence": round(divergence, 4),
+        "debate_needed": debate_needed,
+        "consensus_reasoning": reasoning,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Graph wiring
 # ---------------------------------------------------------------------------
 
-
 def _build_graph() -> StateGraph:
-    """Construct the LangGraph state machine (not yet compiled)."""
-    graph = StateGraph(AgentState)
+    """Construct the LangGraph state machine."""
+    graph = StateGraph(PipelineState)
 
-    graph.add_node("scraper", scraper_node)
-    graph.add_node("theorist", theorist_node)
-    graph.add_node("fact_checker", fact_checker_node)
-    graph.add_node("quant", quant_sandbox_node)
+    graph.add_node("research", research_node)
+    graph.add_node("base_rate", base_rate_node)
+    graph.add_node("model", model_node)
+    graph.add_node("consensus", consensus_node)
 
-    # START -> scraper
-    graph.add_edge(START, "scraper")
+    # Fan-out: START -> all three desks in parallel
+    graph.add_edge(START, "research")
+    graph.add_edge(START, "base_rate")
+    graph.add_edge(START, "model")
 
-    # Fan-out: scraper -> theorist AND scraper -> fact_checker (parallel)
-    graph.add_edge("scraper", "theorist")
-    graph.add_edge("scraper", "fact_checker")
+    # Fan-in: all desks -> consensus
+    graph.add_edge("research", "consensus")
+    graph.add_edge("base_rate", "consensus")
+    graph.add_edge("model", "consensus")
 
-    # Fan-in: [theorist, fact_checker] -> quant
-    graph.add_edge("theorist", "quant")
-    graph.add_edge("fact_checker", "quant")
-
-    # quant -> END
-    graph.add_edge("quant", END)
+    # consensus -> END
+    graph.add_edge("consensus", END)
 
     return graph
 
@@ -290,21 +207,40 @@ def _build_graph() -> StateGraph:
 # Public API
 # ---------------------------------------------------------------------------
 
+async def run_probability_estimation(
+    market_title: str,
+    market_description: str,
+    yes_price: float,
+    category: str,
+) -> dict[str, Any]:
+    """
+    Run the full probability estimation pipeline for a single market.
 
-async def run_orchestrator() -> Dict[str, Any]:
-    """Invoke the multi-agent graph and return the final state."""
+    Returns dict with: system_probability, divergence, debate_needed,
+    consensus_reasoning, and all individual estimates.
+    """
     graph = _build_graph()
     compiled = graph.compile()
 
-    initial_state: AgentState = {
-        "news_catalyst": "",
-        "theses": [],
-        "verified_facts": [],
-        "backtest_results": {},
+    initial_state: PipelineState = {
+        "market_title": market_title,
+        "market_description": market_description,
+        "yes_price": yes_price,
+        "category": category,
+        "estimates": [],
+        "system_probability": 0.0,
+        "divergence": 0.0,
+        "debate_needed": False,
+        "consensus_reasoning": "",
     }
 
-    # LangGraph's invoke is synchronous; run in thread to keep the event loop free
+    # LangGraph invoke is synchronous; run in thread to keep event loop free
     final_state = await asyncio.to_thread(compiled.invoke, initial_state)
 
-    logger.info("Orchestrator complete: %s", final_state.get("backtest_results"))
-    return final_state
+    return {
+        "system_probability": final_state["system_probability"],
+        "divergence": final_state["divergence"],
+        "debate_needed": final_state["debate_needed"],
+        "consensus_reasoning": final_state["consensus_reasoning"],
+        "estimates": final_state["estimates"],
+    }
