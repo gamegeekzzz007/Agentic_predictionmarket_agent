@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import database.models as _models  # noqa: F401 — registers tables with SQLModel metadata
+from app.routes.analyze import router as analyze_router
 from app.routes.calibration import router as calibration_router
 from app.routes.markets import router as markets_router
 from app.routes.positions import router as positions_router
@@ -37,6 +38,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.include_router(analyze_router)
 app.include_router(calibration_router)
 app.include_router(markets_router)
 app.include_router(positions_router)

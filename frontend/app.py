@@ -116,13 +116,95 @@ def page_setup_board():
     st.metric("Qualifying Markets", len(df))
     st.dataframe(
         df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "YES Price": st.column_config.NumberColumn(format="%.4f"),
             "Spread": st.column_config.NumberColumn(format="%.3f"),
         },
     )
+
+    # --- Analyze a market ---
+    st.divider()
+    st.subheader("Analyze a Market")
+    st.caption(
+        "Pick a market to run the full pipeline: "
+        "3 agent desks estimate probability -> debate if needed -> Kelly gate"
+    )
+
+    market_options = {f"{m['id']}: {m['title'][:60]}" : m["id"] for m in markets}
+    selected = st.selectbox("Select market", list(market_options.keys()))
+    selected_id = market_options[selected]
+
+    col_analyze, col_execute = st.columns([3, 1])
+    with col_analyze:
+        analyze_btn = st.button("Analyze (estimate only)", type="primary", width="stretch")
+    with col_execute:
+        execute_btn = st.button("Analyze + Execute", type="secondary", width="stretch")
+
+    if analyze_btn or execute_btn:
+        execute_flag = execute_btn
+        with st.spinner("Running 3 agent desks... this takes 1-3 minutes"):
+            result = api_post(
+                f"/analyze/{selected_id}",
+                timeout=SCAN_TIMEOUT,
+                execute="true" if execute_flag else "false",
+            )
+        if result:
+            st.session_state["last_analysis"] = result
+
+            # Store debate data if triggered
+            if result.get("debate_triggered"):
+                if "debate_results" not in st.session_state:
+                    st.session_state["debate_results"] = []
+                st.session_state["debate_results"].append({
+                    "market_title": result["market_title"],
+                    "divergence": result["divergence"],
+                    "consensus_probability": result["system_probability"],
+                })
+
+    # Display analysis results
+    if "last_analysis" in st.session_state:
+        r = st.session_state["last_analysis"]
+        st.divider()
+        st.subheader(f"Analysis: {r['market_title']}")
+
+        # Agent estimates
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Market Price", f"{r['market_price']:.3f}")
+        m2.metric("System Estimate", f"{r['system_probability']:.3f}")
+        m3.metric("Edge", f"{r['edge']:.3f}")
+
+        # Desk breakdown
+        if r.get("estimates"):
+            st.caption("Agent desk estimates:")
+            for est in r["estimates"]:
+                st.markdown(
+                    f"- **{est['desk'].replace('_', ' ').title()}**: "
+                    f"{est['probability']:.3f} (confidence: {est['confidence']:.2f})"
+                )
+
+        if r.get("debate_triggered"):
+            st.warning(f"Debate triggered (divergence: {r['divergence']:.3f})")
+        st.caption(f"Reasoning: {r['consensus_reasoning']}")
+
+        # Kelly gate result
+        st.divider()
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Side", r["recommended_side"].upper())
+        k2.metric("EV", f"{r['expected_value']:.4f}")
+        k3.metric("Kelly", f"{r['half_kelly_fraction']:.4f}")
+        k4.metric("Contracts", r["num_contracts"])
+
+        if r["tradeable"]:
+            st.success(
+                f"TRADEABLE — ${r['position_size_dollars']:.2f} position | "
+                f"{r['num_contracts']} contracts | Side: {r['recommended_side'].upper()}"
+            )
+            if r.get("order_placed"):
+                st.success(f"Order placed! Position ID: {r['position_id']}")
+        else:
+            st.error(f"REJECTED — {r.get('rejection_reason', 'No edge')}")
 
 
 # ------------------------------------------------------------------
@@ -197,7 +279,7 @@ def page_positions():
         })
 
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
     # Manual close
     st.divider()
@@ -321,7 +403,7 @@ def page_calibration():
             {"Category": cat.title(), "Brier Score": score}
             for cat, score in overview["per_category_scores"].items()
         ])
-        st.dataframe(cat_df, use_container_width=True, hide_index=True)
+        st.dataframe(cat_df, width="stretch", hide_index=True)
 
     st.divider()
 
@@ -380,7 +462,7 @@ def page_calibration():
 
             # Raw data table
             with st.expander("Raw Calibration Data"):
-                st.dataframe(chart_df, use_container_width=True, hide_index=True)
+                st.dataframe(chart_df, width="stretch", hide_index=True)
 
 
 # ------------------------------------------------------------------
@@ -410,7 +492,7 @@ def page_scanner():
     # Scan trigger
     st.subheader("New Scan")
 
-    if st.button("Run Full Scan", type="primary", use_container_width=True):
+    if st.button("Run Full Scan", type="primary", width="stretch"):
         with st.spinner("Scanning markets... this may take 1-2 minutes"):
             result = api_post("/scan/run", timeout=SCAN_TIMEOUT)
             if result:
