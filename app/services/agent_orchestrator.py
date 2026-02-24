@@ -4,10 +4,9 @@ Multi-agent orchestrator using LangGraph (state machine) + smolagents (agent nod
 
 Graph topology:
     START -> [research_desk, base_rate_desk, model_desk] (parallel fan-out)
-          -> consensus_node (fan-in: median or flag for debate)
-          -> END
-
-Phase 4 will add: debate subgraph when divergence > 10%.
+          -> consensus_node (fan-in: check divergence)
+          -> IF divergence > 10%: debate_node -> END
+          -> ELSE: END (median estimate)
 """
 
 import asyncio
@@ -22,6 +21,7 @@ from agents import EstimateResult
 from agents.research_desk.researcher import run_research_desk
 from agents.base_rate_desk.base_rate import run_base_rate_desk
 from agents.model_desk.statistical_model import run_model_desk
+from agents.debate.chatroom import run_debate
 from core.constants import DEBATE_DIVERGENCE_THRESHOLD
 
 logger = logging.getLogger(__name__)
@@ -47,11 +47,16 @@ class PipelineState(TypedDict):
     # Accumulated estimates from desks (reducer: append)
     estimates: Annotated[list[dict], _merge_estimates]
 
-    # Output (set by consensus node)
+    # Consensus output
     system_probability: float
     divergence: float
     debate_needed: bool
     consensus_reasoning: str
+
+    # Debate output
+    debate_transcript: list[dict]
+    debate_rounds: int
+    debate_converged: bool
 
 
 # ---------------------------------------------------------------------------
@@ -107,15 +112,14 @@ def _estimate_to_dict(est: EstimateResult) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Consensus node (fan-in: combine estimates)
+# Consensus node (fan-in: combine estimates, check divergence)
 # ---------------------------------------------------------------------------
 
 def consensus_node(state: PipelineState) -> dict:
     """
-    Combine estimates from all desks into a single probability.
-
-    If divergence > DEBATE_DIVERGENCE_THRESHOLD: flag for debate (Phase 4).
-    Otherwise: take the weighted median by confidence.
+    Combine estimates from all desks.
+    If divergence <= threshold: take median and finish.
+    If divergence > threshold: flag for debate.
     """
     estimates = state["estimates"]
     if not estimates:
@@ -128,42 +132,33 @@ def consensus_node(state: PipelineState) -> dict:
 
     probabilities = [e["probability"] for e in estimates]
     confidences = [e["confidence"] for e in estimates]
-
-    # Divergence = max - min
     divergence = max(probabilities) - min(probabilities)
-
-    # Debate threshold check
     debate_needed = divergence > DEBATE_DIVERGENCE_THRESHOLD
 
-    # Weighted average by confidence (more confident agents get more weight)
-    total_weight = sum(confidences)
-    if total_weight > 0:
-        weighted_avg = sum(p * c for p, c in zip(probabilities, confidences)) / total_weight
-    else:
-        weighted_avg = statistics.median(probabilities)
-
-    # If divergence is small, use median (more robust to outliers)
-    # If divergence is large, use weighted average (confidence matters more)
-    if debate_needed:
-        system_probability = weighted_avg
-        method = "weighted_avg (debate flagged)"
-    else:
+    if not debate_needed:
         system_probability = statistics.median(probabilities)
         method = "median"
+    else:
+        # Temporary: weighted average (debate will refine this)
+        total_weight = sum(confidences)
+        if total_weight > 0:
+            system_probability = sum(p * c for p, c in zip(probabilities, confidences)) / total_weight
+        else:
+            system_probability = statistics.median(probabilities)
+        method = "weighted_avg (pre-debate)"
 
-    # Build reasoning summary
-    desk_summaries = []
-    for e in estimates:
-        desk_summaries.append(f"{e['desk']}: {e['probability']:.3f} (conf={e['confidence']:.2f})")
-
+    desk_summaries = [
+        f"{e['desk']}: {e['probability']:.3f} (conf={e['confidence']:.2f})"
+        for e in estimates
+    ]
     reasoning = (
         f"Method: {method} | Divergence: {divergence:.3f} | "
         f"Estimates: {', '.join(desk_summaries)}"
     )
 
     logger.info(
-        "Consensus: p=%.3f divergence=%.3f debate=%s method=%s",
-        system_probability, divergence, debate_needed, method,
+        "Consensus: p=%.3f divergence=%.3f debate=%s",
+        system_probability, divergence, debate_needed,
     )
 
     return {
@@ -172,6 +167,54 @@ def consensus_node(state: PipelineState) -> dict:
         "debate_needed": debate_needed,
         "consensus_reasoning": reasoning,
     }
+
+
+# ---------------------------------------------------------------------------
+# Debate node (only runs when divergence is high)
+# ---------------------------------------------------------------------------
+
+def debate_node(state: PipelineState) -> dict:
+    """Run the debate chatroom to resolve divergent estimates."""
+    logger.info("Debate triggered — divergence=%.3f", state["divergence"])
+
+    result = run_debate(
+        market_title=state["market_title"],
+        market_description=state["market_description"],
+        yes_price=state["yes_price"],
+        category=state["category"],
+        estimates=state["estimates"],
+    )
+
+    # Update system probability with debate consensus
+    reasoning = (
+        f"Debate result: converged={result['converged']}, "
+        f"rounds={result['rounds_used']}, "
+        f"consensus={result['consensus_probability']:.3f}"
+    )
+
+    logger.info(
+        "Debate complete: p=%.3f converged=%s rounds=%d",
+        result["consensus_probability"], result["converged"], result["rounds_used"],
+    )
+
+    return {
+        "system_probability": result["consensus_probability"],
+        "debate_transcript": result["transcript"],
+        "debate_rounds": result["rounds_used"],
+        "debate_converged": result["converged"],
+        "consensus_reasoning": reasoning,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Conditional routing
+# ---------------------------------------------------------------------------
+
+def _should_debate(state: PipelineState) -> str:
+    """Route to debate if needed, otherwise end."""
+    if state.get("debate_needed", False):
+        return "debate"
+    return END
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +229,7 @@ def _build_graph() -> StateGraph:
     graph.add_node("base_rate", base_rate_node)
     graph.add_node("model", model_node)
     graph.add_node("consensus", consensus_node)
+    graph.add_node("debate", debate_node)
 
     # Fan-out: START -> all three desks in parallel
     graph.add_edge(START, "research")
@@ -197,8 +241,11 @@ def _build_graph() -> StateGraph:
     graph.add_edge("base_rate", "consensus")
     graph.add_edge("model", "consensus")
 
-    # consensus -> END
-    graph.add_edge("consensus", END)
+    # Conditional: consensus -> debate or END
+    graph.add_conditional_edges("consensus", _should_debate, {"debate": "debate", END: END})
+
+    # debate -> END
+    graph.add_edge("debate", END)
 
     return graph
 
@@ -217,7 +264,7 @@ async def run_probability_estimation(
     Run the full probability estimation pipeline for a single market.
 
     Returns dict with: system_probability, divergence, debate_needed,
-    consensus_reasoning, and all individual estimates.
+    consensus_reasoning, estimates, and debate fields if triggered.
     """
     graph = _build_graph()
     compiled = graph.compile()
@@ -232,6 +279,9 @@ async def run_probability_estimation(
         "divergence": 0.0,
         "debate_needed": False,
         "consensus_reasoning": "",
+        "debate_transcript": [],
+        "debate_rounds": 0,
+        "debate_converged": False,
     }
 
     # LangGraph invoke is synchronous; run in thread to keep event loop free
@@ -243,4 +293,7 @@ async def run_probability_estimation(
         "debate_needed": final_state["debate_needed"],
         "consensus_reasoning": final_state["consensus_reasoning"],
         "estimates": final_state["estimates"],
+        "debate_transcript": final_state.get("debate_transcript", []),
+        "debate_rounds": final_state.get("debate_rounds", 0),
+        "debate_converged": final_state.get("debate_converged", False),
     }
