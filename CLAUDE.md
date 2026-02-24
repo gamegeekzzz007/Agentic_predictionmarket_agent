@@ -9,8 +9,8 @@ mispricings, and places limit orders when the Kelly criterion confirms positive 
 
 **Core philosophy:** Math decides → AI debates → News confirms → Kelly sizes → Market executes.
 
-This was originally an equity-trading system. It is being **fully rebuilt** for prediction markets.
-Some components are reusable. Most need to be replaced.
+Originally an equity-trading system, now **fully migrated** to prediction markets.
+The migration is complete — all equity artifacts have been removed.
 
 ---
 

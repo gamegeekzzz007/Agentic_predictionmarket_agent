@@ -657,50 +657,49 @@ apscheduler>=3.10.0              # For scheduled scanning
 Use this checklist to track progress. Each item maps to a specific file change.
 
 ```
-[ ] Phase 1: Foundation
-    [ ] Update core/config.py — new env vars (remove ALPACA_*, add KALSHI_*, POLY_*, SCANNER_*)
-    [ ] Update core/constants.py — add MAX_CONCURRENT_POSITIONS, MIN_EDGE_THRESHOLD, etc.
-    [ ] Rewrite database/models.py — replace all models with spec above
-    [ ] Create app/services/kalshi_client.py
-    [ ] Create app/services/polymarket_client.py  
-    [ ] Create app/routes/markets.py
-    [ ] Update app/main.py — swap router imports
-    [ ] Update requirements.txt
-    [ ] Update .env.example
+[x] Phase 1: Foundation
+    [x] Update core/config.py — new env vars (remove ALPACA_*, add KALSHI_*, POLY_*, SCANNER_*)
+    [x] Update core/constants.py — add MAX_CONCURRENT_POSITIONS, MIN_EDGE_THRESHOLD, etc.
+    [x] Rewrite database/models.py — replace all models with spec above
+    [x] Create app/services/kalshi_client.py
+    [x] Create app/services/polymarket_client.py
+    [x] Create app/routes/markets.py
+    [x] Update app/main.py — swap router imports
+    [x] Update requirements.txt
+    [x] Update .env.example
 
-[ ] Phase 2: Scanner
-    [ ] Create app/services/scanner_service.py
-    [ ] Create app/routes/scanner.py
-    [ ] Test: scanner pulls and filters live markets
+[x] Phase 2: Scanner
+    [x] Create app/services/scanner_service.py
+    [x] Create app/routes/scanner.py
+    [x] Test: scanner pulls and filters live markets
 
-[ ] Phase 3: Probability Estimation
-    [ ] Create agents/research_desk/researcher.py
-    [ ] Create agents/base_rate_desk/base_rate.py
-    [ ] Create agents/model_desk/statistical_model.py
-    [ ] Create agents/model_desk/economic_model.py
-    [ ] Rewrite app/services/agent_orchestrator.py — new LangGraph graph
-    [ ] Test: agents produce probability estimates for a market
+[x] Phase 3: Probability Estimation
+    [x] Create agents/research_desk/researcher.py
+    [x] Create agents/base_rate_desk/base_rate.py
+    [x] Create agents/model_desk/statistical_model.py
+    [x] Rewrite app/services/agent_orchestrator.py — new LangGraph graph
+    [x] Test: agents produce probability estimates for a market
 
-[ ] Phase 4: Debate
-    [ ] Create agents/debate/chatroom.py
-    [ ] Wire into orchestrator with divergence trigger
-    [ ] Test: debate fires when agents disagree >10%
+[x] Phase 4: Debate
+    [x] Create agents/debate/chatroom.py
+    [x] Wire into orchestrator with divergence trigger
+    [x] Test: debate fires when agents disagree >10%
 
-[ ] Phase 5: Kelly + Execution
-    [ ] Create edge calculation wrapper using existing math_utils
-    [ ] Wire execution into scanner pipeline
-    [ ] Create app/routes/positions.py
-    [ ] Test: end-to-end scan → estimate → Kelly → order
+[x] Phase 5: Kelly + Execution
+    [x] Create edge calculation wrapper using existing math_utils
+    [x] Wire execution into scanner pipeline
+    [x] Create app/routes/positions.py
+    [x] Test: end-to-end scan → estimate → Kelly → order
 
-[ ] Phase 6: Dashboard + Calibration
-    [ ] Rewrite frontend/app.py
-    [ ] Create app/routes/calibration.py
-    [ ] Test: full system on demo/paper accounts
+[x] Phase 6: Dashboard + Calibration
+    [x] Rewrite frontend/app.py
+    [x] Create app/routes/calibration.py
+    [x] Test: full system on demo/paper accounts
 
-[ ] Phase 7: Cleanup
-    [ ] Delete app/services/alpaca.py
-    [ ] Delete app/routes/trades.py (old)
-    [ ] Delete app/routes/portfolio.py (old)
-    [ ] Remove all equity-trading references from codebase
-    [ ] Update README.md
+[x] Phase 7: Cleanup
+    [x] Delete app/services/alpaca.py
+    [x] Delete app/routes/trades.py (old)
+    [x] Delete app/routes/portfolio.py (old)
+    [x] Remove all equity-trading references from codebase
+    [x] Update README.md
 ```
