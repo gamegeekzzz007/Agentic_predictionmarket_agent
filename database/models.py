@@ -167,7 +167,7 @@ class Position(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
 
     market_id: int = Field(foreign_key="market.id", index=True)
-    edge_analysis_id: int = Field(foreign_key="edgeanalysis.id")
+    edge_analysis_id: Optional[int] = Field(default=None, foreign_key="edgeanalysis.id")
 
     # Position details
     platform: Platform
