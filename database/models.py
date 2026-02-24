@@ -4,11 +4,16 @@ SQLModel table definitions for the Agentic Prediction Market system.
 Replaces the old equity-trading Trade/AuditLog models entirely.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
 from sqlmodel import SQLModel, Field
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (replaces the deprecated utcnow call)."""
+    return datetime.now(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -87,8 +92,8 @@ class Market(SQLModel, table=True):
     resolved_outcome: Optional[bool] = None
 
     # Metadata
-    first_seen: datetime = Field(default_factory=datetime.utcnow)
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    first_seen: datetime = Field(default_factory=_utcnow)
+    last_updated: datetime = Field(default_factory=_utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +120,7 @@ class ProbabilityEstimate(SQLModel, table=True):
     # For model desk: which model was used
     model_type: Optional[str] = None
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +159,7 @@ class EdgeAnalysis(SQLModel, table=True):
     debate_transcript: Optional[str] = None
     estimates_divergence: float = 0.0
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +193,7 @@ class Position(SQLModel, table=True):
     platform_order_id: Optional[str] = None
 
     # Timing
-    opened_at: datetime = Field(default_factory=datetime.utcnow)
+    opened_at: datetime = Field(default_factory=_utcnow)
     closed_at: Optional[datetime] = None
 
 
@@ -221,4 +226,4 @@ class CalibrationRecord(SQLModel, table=True):
     # Category for per-category calibration
     category: MarketCategory
 
-    resolved_at: datetime = Field(default_factory=datetime.utcnow)
+    resolved_at: datetime = Field(default_factory=_utcnow)

@@ -26,10 +26,14 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Startup: create DB tables."""
+    """Startup: create DB tables and start scheduler. Shutdown: stop scheduler."""
+    from app.services.scheduler import start_scheduler, stop_scheduler
+
     await init_db()
     logger.info("Database initialized — tables created")
+    start_scheduler()
     yield
+    stop_scheduler()
 
 
 app = FastAPI(

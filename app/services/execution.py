@@ -15,7 +15,7 @@ from sqlmodel import select, func
 from app.services.kalshi_client import KalshiClient
 from app.services.polymarket_client import PolymarketClient
 from core.config import get_settings
-from core.constants import MAX_CONCURRENT_POSITIONS
+from core.constants import MAX_CONCURRENT_POSITIONS, MAX_DAILY_DRAWDOWN_PCT
 from database.models import (
     EdgeAnalysis,
     Market,
@@ -65,6 +65,27 @@ async def execute_trade(
         logger.warning(
             "Max concurrent positions reached (%d/%d). Skipping.",
             open_count, MAX_CONCURRENT_POSITIONS,
+        )
+        return None
+
+    # --- Safety check: daily drawdown kill-switch ---
+    today = datetime.now(timezone.utc).date()
+    closed_today_result = await session.execute(
+        select(Position).where(
+            Position.closed_at.isnot(None),
+        )
+    )
+    closed_today_positions = closed_today_result.scalars().all()
+    daily_realized = sum(
+        p.pnl_dollars or 0.0
+        for p in closed_today_positions
+        if p.closed_at and p.closed_at.date() == today
+    )
+    drawdown_limit = settings.BANKROLL * MAX_DAILY_DRAWDOWN_PCT
+    if daily_realized < -drawdown_limit:
+        logger.warning(
+            "Daily drawdown kill-switch triggered: realized=$%.2f, limit=-$%.2f. Blocking trade.",
+            daily_realized, drawdown_limit,
         )
         return None
 

@@ -4,6 +4,7 @@ Async wrapper around Polymarket's Gamma (market data) and CLOB (trading) APIs.
 Public endpoints need no auth. Trading requires EIP-712 wallet signing via py-clob-client.
 """
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -152,13 +153,15 @@ class PolymarketClient:
         from py_clob_client.order_builder.constants import BUY, SELL
 
         order_side = BUY if side.upper() == "BUY" else SELL
-        order = self._clob_client.create_order(
+        # py-clob-client is synchronous — run in thread to avoid blocking the event loop
+        order = await asyncio.to_thread(
+            self._clob_client.create_order,
             token_id=token_id,
             price=price,
             size=size,
             side=order_side,
         )
-        result = self._clob_client.post_order(order)
+        result = await asyncio.to_thread(self._clob_client.post_order, order)
         return result
 
     async def get_positions(self) -> list[dict]:

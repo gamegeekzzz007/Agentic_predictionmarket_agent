@@ -7,6 +7,7 @@ from both Kalshi and Polymarket.
 import logging
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 

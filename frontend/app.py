@@ -161,6 +161,9 @@ def page_setup_board():
                     "market_title": result["market_title"],
                     "divergence": result["divergence"],
                     "consensus_probability": result["system_probability"],
+                    "transcript": result.get("debate_transcript", []),
+                    "rounds_used": result.get("debate_rounds"),
+                    "converged": result.get("debate_converged"),
                 })
 
     # Display analysis results
@@ -300,71 +303,107 @@ def page_positions():
 # Page 3: Debate Logs
 # ------------------------------------------------------------------
 
+def _render_debate_transcript(transcript, consensus_probability=None, converged=None):
+    """Render a debate transcript (list of entries) as Streamlit markdown."""
+    if not transcript:
+        st.caption("No transcript available.")
+        return
+
+    # Handle transcript as list of dicts or as a plain string
+    if isinstance(transcript, str):
+        import json as _json
+        try:
+            transcript = _json.loads(transcript)
+        except (ValueError, TypeError):
+            st.text(transcript)
+            return
+
+    if not isinstance(transcript, list):
+        st.text(str(transcript))
+        return
+
+    for entry in transcript:
+        if not isinstance(entry, dict):
+            st.text(str(entry))
+            continue
+
+        agent = entry.get("agent", "unknown")
+        round_num = entry.get("round", 0)
+        msg_type = entry.get("type", "")
+        message = entry.get("message", "")
+
+        colors = {
+            "research_desk": "blue",
+            "base_rate_desk": "green",
+            "model_desk": "orange",
+            "moderator": "red",
+        }
+        color = colors.get(agent, "gray")
+
+        st.markdown(
+            f"**Round {round_num}** | "
+            f":{color}[**{agent}**] ({msg_type})"
+        )
+        st.markdown(f"> {message}")
+        if "updated_probability" in entry:
+            st.markdown(
+                f"Updated estimate: **{entry['updated_probability']:.3f}**"
+            )
+        st.markdown("---")
+
+    if consensus_probability is not None:
+        st.success(
+            f"Final consensus: **{consensus_probability:.3f}** "
+            f"(converged: {converged if converged is not None else 'N/A'})"
+        )
+
+
 def page_debate_logs():
     st.header("Debate Logs")
     st.caption("Agent debates triggered when estimate divergence exceeds 10 percentage points")
 
-    # Debate transcripts are stored in EdgeAnalysis records
-    # For now, show a note about where to find them
-    data = api_get("/scan/results")
-    if data is None:
+    # --- Load persisted debates from API ---
+    api_debates = api_get("/analyze/debates")
+    has_api_debates = api_debates and api_debates.get("debates")
+
+    # --- Session-state debates (current session only) ---
+    session_debates = st.session_state.get("debate_results", [])
+
+    if not has_api_debates and not session_debates:
+        st.info(
+            "No debate logs yet. Run a probability estimation on a market "
+            "where agent desks diverge by more than 10 percentage points."
+        )
         return
 
-    markets = data.get("markets", [])
-    if not markets:
-        st.info("No markets scanned yet. Run a scan first.")
-        return
-
-    st.info(
-        "Debate transcripts are generated during probability estimation when "
-        "agent desks diverge by more than 10 percentage points. They are stored "
-        "in EdgeAnalysis records and displayed here after estimation runs."
-    )
-
-    # Show debate data from session state if available
-    if "debate_results" in st.session_state:
-        for debate in st.session_state["debate_results"]:
+    # --- Show persisted debates from DB ---
+    if has_api_debates:
+        st.subheader(f"Saved Debates ({api_debates['count']})")
+        for debate in api_debates["debates"]:
             with st.expander(
-                f"Debate: {debate.get('market_title', 'Unknown')} "
+                f"{debate.get('market_title', 'Unknown')} "
+                f"(divergence: {debate.get('estimates_divergence', 0):.1%}) — "
+                f"{debate.get('created_at', '')[:19]}"
+            ):
+                st.markdown(
+                    f"**System probability:** {debate['system_probability']:.3f} | "
+                    f"**Market price:** {debate['market_price']:.3f}"
+                )
+                _render_debate_transcript(debate.get("debate_transcript"))
+
+    # --- Show current-session debates ---
+    if session_debates:
+        st.subheader(f"Current Session Debates ({len(session_debates)})")
+        for debate in session_debates:
+            with st.expander(
+                f"{debate.get('market_title', 'Unknown')} "
                 f"(divergence: {debate.get('divergence', 0):.1%})"
             ):
-                transcript = debate.get("transcript", [])
-                for entry in transcript:
-                    agent = entry.get("agent", "unknown")
-                    round_num = entry.get("round", 0)
-                    msg_type = entry.get("type", "")
-                    message = entry.get("message", "")
-
-                    # Color-code by desk
-                    colors = {
-                        "research_desk": "blue",
-                        "base_rate_desk": "green",
-                        "model_desk": "orange",
-                        "moderator": "red",
-                    }
-                    color = colors.get(agent, "gray")
-
-                    st.markdown(
-                        f"**Round {round_num}** | "
-                        f":{color}[**{agent}**] ({msg_type})"
-                    )
-                    st.markdown(f"> {message}")
-                    if "updated_probability" in entry:
-                        st.markdown(
-                            f"Updated estimate: **{entry['updated_probability']:.3f}**"
-                        )
-                    st.markdown("---")
-
-                if debate.get("consensus_probability"):
-                    st.success(
-                        f"Final consensus: **{debate['consensus_probability']:.3f}** "
-                        f"(converged: {debate.get('converged', False)})"
-                    )
-    else:
-        st.info(
-            "No debate logs in this session yet. "
-            "Run a probability estimation to generate debates."
-        )
+                _render_debate_transcript(
+                    debate.get("transcript", []),
+                    consensus_probability=debate.get("consensus_probability"),
+                    converged=debate.get("converged"),
+                )
 
 
 # ------------------------------------------------------------------

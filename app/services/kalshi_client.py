@@ -201,6 +201,11 @@ class KalshiClient:
         data = await self._post("/portfolio/orders", body)
         return data.get("order", data)
 
+    async def get_order(self, order_id: str) -> dict:
+        """Get a single order's current status."""
+        data = await self._get(f"/portfolio/orders/{order_id}", auth=True)
+        return data.get("order", data)
+
     async def cancel_order(self, order_id: str) -> dict:
         """Cancel an open order."""
         return await self._delete(f"/portfolio/orders/{order_id}")
