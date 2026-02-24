@@ -1,6 +1,6 @@
 """
 app/main.py
-FastAPI entry point for the Agentic Trading system.
+FastAPI entry point for the Agentic Prediction Market system.
 """
 
 import logging
@@ -14,10 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import database.models as _models  # noqa: F401 — registers tables with SQLModel metadata
-from app.routes.trades import router as trades_router
-from app.routes.portfolio import router as portfolio_router
-from app.routes.agents import router as agents_router
-from app.services.alpaca import init_alpaca_service
+from app.routes.markets import router as markets_router
 from database.connection import get_session, init_db
 
 logger = logging.getLogger(__name__)
@@ -25,33 +22,19 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Startup: create DB tables + verify Alpaca connection."""
+    """Startup: create DB tables."""
     await init_db()
-
-    alpaca = init_alpaca_service()
-    try:
-        account = await alpaca.verify_connection()
-        print(
-            f"[OK] Alpaca connected — equity=${account.equity:,.2f}, "
-            f"buying_power=${account.buying_power:,.2f}",
-            flush=True,
-        )
-    except Exception as exc:
-        print(f"[FAIL] Alpaca connection failed: {exc}", flush=True)
-        raise
-
+    logger.info("Database initialized — tables created")
     yield
 
 
 app = FastAPI(
-    title="Agentic Trading API",
-    version="0.1.0",
+    title="Agentic Prediction Market API",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-app.include_router(trades_router)
-app.include_router(portfolio_router)
-app.include_router(agents_router)
+app.include_router(markets_router)
 
 
 @app.get("/health")

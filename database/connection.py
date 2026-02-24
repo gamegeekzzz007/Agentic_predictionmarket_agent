@@ -9,7 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import SQLModel
 
-DATABASE_URL = "sqlite+aiosqlite:///./agentic_trading.db"
+from core.config import get_settings
+
+DATABASE_URL = get_settings().DATABASE_URL
 
 engine = create_async_engine(
     DATABASE_URL,

@@ -1,18 +1,32 @@
+# API Framework
 fastapi>=0.115.0
-uvicorn>=0.34.0
-sqlmodel>=0.0.22
-alpaca-py>=0.33.0
-python-dotenv>=1.0.1
-openai>=1.60.0
-httpx>=0.28.0
+uvicorn[standard]>=0.34.0
 pydantic>=2.10.0
 pydantic-settings>=2.0.0
-newsapi-python>=0.2.7
-python-telegram-bot>=21.0
+
+# Database
+sqlmodel>=0.0.22
 aiosqlite>=0.20.0
+
+# AI / Agents
 langgraph>=0.4.0
 smolagents[litellm,toolkit]>=1.24.0
-yfinance>=0.2.40
-pandas>=2.2.0
+
+# Search
 tavily-python>=0.7.0
+
+# Market Data Clients
+httpx>=0.28.0
+py-clob-client>=0.1.0
+web3>=6.11.0
+cryptography>=41.0.0
+
+# Data
+pandas>=2.2.0
+
+# Dashboard
 streamlit>=1.40.0
+
+# Utilities
+python-dotenv>=1.0.1
+apscheduler>=3.10.0
